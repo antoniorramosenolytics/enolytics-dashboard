@@ -565,7 +565,18 @@ def compute_kamensky_analysis(df_wineries, X_mc_scaled, X_rs_scaled, soft_assign
 
 
 def calculate_threat_score(df, target_winery):
-    """Calcula un score de amenaza combinado para cada competidor."""
+    """
+    Calcula un score de amenaza combinado para cada competidor.
+
+    El score considera:
+    - Market Commonality (MC): 30% - qué tan similar es el mercado objetivo
+    - Resource Similarity (RS): 20% - qué tan similares son los recursos
+    - Competition Score: 25% - similitud en el espacio de clusters
+    - Category Score: 25% - categoría Kamensky asignada
+
+    Todos los valores de entrada están normalizados [0,1], por lo que
+    el threat_score final también está en [0,1].
+    """
     threat_scores = []
 
     for idx, row in df.iterrows():
@@ -573,13 +584,19 @@ def calculate_threat_score(df, target_winery):
             threat_scores.append(0)
             continue
 
-        # Componentes del score de amenaza
-        mc_weight = 0.3
-        rs_weight = 0.2
+        # Componentes del score de amenaza (pesos suman 1.0)
+        mc_weight = 0.30
+        rs_weight = 0.20
         competition_weight = 0.25
         category_weight = 0.25
 
-        category_scores = {'Core': 1.0, 'Substitute': 0.7, 'Marginal': 0.5, 'Potential': 0.2}
+        # Scores por categoría Kamensky (coherente con la teoría de rivalidad)
+        category_scores = {
+            'Core': 1.0,       # Máxima amenaza: compiten en mismo mercado con recursos similares
+            'Substitute': 0.7, # Alta amenaza: compiten en mismo mercado
+            'Marginal': 0.5,   # Amenaza media: recursos similares pero diferente mercado
+            'Potential': 0.2   # Baja amenaza: vigilar
+        }
 
         mc_score = row['market_commonality']
         rs_score = row['resource_similarity']
