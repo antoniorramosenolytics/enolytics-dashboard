@@ -142,32 +142,30 @@ class DeepSoftClustering(nn.Module):
 
 @st.cache_data
 def get_available_countries(data_path):
-    """Obtiene la lista de países disponibles en el dataset."""
+    """Obtiene la lista de países disponibles en el dataset, ordenados alfabéticamente."""
     df = pd.read_csv(data_path, usecols=['country'])
-    country_counts = df['country'].value_counts()
-    return country_counts.index.tolist()
+    countries = df['country'].dropna().unique().tolist()
+    return sorted(countries)
 
 
 @st.cache_data
 def get_available_regions(data_path, country_filter):
-    """Obtiene la lista de regiones disponibles para un país específico."""
+    """Obtiene la lista de regiones disponibles para un país específico, ordenadas alfabéticamente."""
     df = pd.read_csv(data_path, usecols=['country', 'region_1'])
     df = df[df['country'] == country_filter]
-    region_counts = df['region_1'].value_counts()
-    region_list = region_counts.index.tolist()
-    return ['Todas'] + region_list
+    regions = df['region_1'].dropna().unique().tolist()
+    return ['Todas'] + sorted(regions)
 
 
 @st.cache_data
 def get_available_varieties(data_path, country_filter, region_filter='Todas'):
-    """Obtiene la lista de variedades disponibles."""
+    """Obtiene la lista de variedades disponibles, ordenadas alfabéticamente."""
     df = pd.read_csv(data_path, usecols=['country', 'region_1', 'variety'])
     df = df[df['country'] == country_filter]
     if region_filter != 'Todas':
         df = df[df['region_1'] == region_filter]
-    variety_counts = df['variety'].value_counts()
-    variety_list = variety_counts.index.tolist()
-    return ['Todas'] + variety_list
+    varieties = df['variety'].dropna().unique().tolist()
+    return ['Todas'] + sorted(varieties)
 
 
 @st.cache_data
@@ -1292,11 +1290,20 @@ def main():
         # Fallback para desarrollo local
         data_path = "/Users/antoniorafaelramosrodriguez/Dropbox/ACEDE BODEGAS 2026/DATA/winemag-data_first150k.csv"
 
-    # Selector de país
+    # Selector de país (sin valor por defecto)
     st.sidebar.subheader("País")
     available_countries = get_available_countries(data_path)
-    default_country_idx = available_countries.index('Spain') if 'Spain' in available_countries else 0
-    selected_country = st.sidebar.selectbox("Selecciona el país:", available_countries, index=default_country_idx)
+    selected_country = st.sidebar.selectbox(
+        "Selecciona el país:",
+        available_countries,
+        index=None,
+        placeholder="Elige un país..."
+    )
+
+    # Si no hay país seleccionado, mostrar mensaje y detener
+    if selected_country is None:
+        st.info("Por favor, selecciona un país en el panel lateral para comenzar el análisis.")
+        st.stop()
 
     # Selector de región
     st.sidebar.subheader("Región")
