@@ -1500,13 +1500,13 @@ def main():
     # ==========================================================================
     # PESTAÑAS PRINCIPALES
     # ==========================================================================
-    # Orden: Perfil, Clusters, Comparador, Competidores, Matriz Kamensky, Visualizaciones, Gaps, Diagnóstico
+    # Orden: Perfil, [Clusters Óptimos], Clusters, Comparador, Competidores, Matriz Kamensky, Visualizaciones, Gaps, Diagnóstico
     tab_names = ["Perfil", "Clusters", "Comparador", "Competidores", "Matriz Kamensky", "Visualizaciones", "Gaps & Oportunidades", "Diagnóstico"]
     if show_optimal_analysis:
-        tab_names.insert(5, "Clusters Óptimos")
+        tab_names.insert(1, "Clusters Óptimos")
 
     if show_optimal_analysis:
-        tab_perfil, tab_clusters, tab_comparador, tab_competidores, tab_kamensky, tab_clusters_opt, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
+        tab_perfil, tab_clusters_opt, tab_clusters, tab_comparador, tab_competidores, tab_kamensky, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
     else:
         tab_perfil, tab_clusters, tab_comparador, tab_competidores, tab_kamensky, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
 
