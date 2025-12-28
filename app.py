@@ -145,14 +145,15 @@ def get_available_countries(data_path):
     """Obtiene la lista de países disponibles en el dataset, ordenados alfabéticamente."""
     df = pd.read_csv(data_path, usecols=['country'])
     countries = df['country'].dropna().unique().tolist()
-    return sorted(countries)
+    return ['Todos'] + sorted(countries)
 
 
 @st.cache_data
 def get_available_regions(data_path, country_filter):
     """Obtiene la lista de regiones disponibles para un país específico, ordenadas alfabéticamente."""
     df = pd.read_csv(data_path, usecols=['country', 'region_1'])
-    df = df[df['country'] == country_filter]
+    if country_filter != 'Todos':
+        df = df[df['country'] == country_filter]
     regions = df['region_1'].dropna().unique().tolist()
     return ['Todas'] + sorted(regions)
 
@@ -161,7 +162,8 @@ def get_available_regions(data_path, country_filter):
 def get_available_varieties(data_path, country_filter, region_filter='Todas'):
     """Obtiene la lista de variedades disponibles, ordenadas alfabéticamente."""
     df = pd.read_csv(data_path, usecols=['country', 'region_1', 'variety'])
-    df = df[df['country'] == country_filter]
+    if country_filter != 'Todos':
+        df = df[df['country'] == country_filter]
     if region_filter != 'Todas':
         df = df[df['region_1'] == region_filter]
     varieties = df['variety'].dropna().unique().tolist()
@@ -172,7 +174,8 @@ def get_available_varieties(data_path, country_filter, region_filter='Todas'):
 def get_price_range(data_path, country_filter):
     """Obtiene el rango de precios para un país."""
     df = pd.read_csv(data_path, usecols=['country', 'price'])
-    df = df[df['country'] == country_filter]
+    if country_filter != 'Todos':
+        df = df[df['country'] == country_filter]
     min_price = df['price'].min()
     max_price = df['price'].max()
     return float(min_price) if pd.notna(min_price) else 0.0, float(max_price) if pd.notna(max_price) else 500.0
@@ -183,7 +186,12 @@ def load_and_process_data(data_path, country_filter='Spain', region_filter='Toda
                           variety_filter='Todas', price_range=None, min_wines=3):
     """Carga y procesa los datos de vinos con filtros avanzados."""
     df_raw = pd.read_csv(data_path)
-    df_raw = df_raw[df_raw['country'] == country_filter].copy()
+
+    # Filtrar por país (si no es "Todos")
+    if country_filter != 'Todos':
+        df_raw = df_raw[df_raw['country'] == country_filter].copy()
+    else:
+        df_raw = df_raw.copy()
 
     # Filtrar por región
     if region_filter != 'Todas':
