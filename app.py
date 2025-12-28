@@ -617,15 +617,17 @@ def compute_kamensky_analysis(df_wineries, X_mc_scaled, X_rs_scaled, soft_assign
 
     # Resetear índice para evitar problemas de serialización con int64
     df_cluster = df_cluster.reset_index(drop=True)
+    df_all = df.reset_index(drop=True)  # También resetear el de todas las bodegas
 
-    # Añadir metadatos del análisis
-    df_cluster.attrs['n_total_wineries'] = n_total
-    df_cluster.attrs['n_cluster_wineries'] = n_cluster
-    df_cluster.attrs['target_cluster'] = int(target_cluster)  # Convertir a int nativo
-    df_cluster.attrs['cluster_prob_threshold'] = cluster_prob_threshold
-    df_cluster.attrs['df_all_wineries'] = df  # Guardar todas las bodegas para la pestaña de clusters
+    # Crear diccionario de metadatos (sin DataFrames para evitar errores de serialización)
+    metadata = {
+        'n_total_wineries': n_total,
+        'n_cluster_wineries': n_cluster,
+        'target_cluster': int(target_cluster),
+        'cluster_prob_threshold': cluster_prob_threshold
+    }
 
-    return df_cluster, mc_threshold, rs_threshold
+    return df_cluster, mc_threshold, rs_threshold, df_all, metadata
 
 
 def calculate_threat_score(df, target_winery):
@@ -1475,7 +1477,7 @@ def main():
 
     # Análisis de Kamensky
     with st.spinner("Calculando análisis de Kamensky..."):
-        df_analysis, mc_threshold, rs_threshold = compute_kamensky_analysis(
+        df_analysis, mc_threshold, rs_threshold, df_all_wineries, metadata = compute_kamensky_analysis(
             df_features, X_mc_scaled, X_rs_scaled, soft_assignments, target_winery
         )
 
@@ -1484,9 +1486,9 @@ def main():
     gaps_df = find_market_gaps(df_analysis, df_raw, target_winery)
 
     # Obtener metadatos del análisis
-    n_total = df_analysis.attrs.get('n_total_wineries', len(df_wineries))
-    n_cluster = df_analysis.attrs.get('n_cluster_wineries', len(df_analysis))
-    target_cluster = df_analysis.attrs.get('target_cluster', int(target_data['cluster']))
+    n_total = metadata['n_total_wineries']
+    n_cluster = metadata['n_cluster_wineries']
+    target_cluster = metadata['target_cluster']
 
     # Mostrar información del análisis por cluster
     st.info(f"""
@@ -1496,20 +1498,18 @@ def main():
     El análisis Kamensky se realiza solo entre competidores del mismo cluster, lo cual es metodológicamente correcto.
     """)
 
-    # Obtener todas las bodegas con sus clusters para la pestaña de Segmentos
-    df_all_wineries = df_analysis.attrs.get('df_all_wineries', None)
-
     # ==========================================================================
     # PESTAÑAS PRINCIPALES
     # ==========================================================================
-    tab_names = ["Perfil", "Comparador", "Competidores", "Matriz Kamensky", "Segmentos", "Visualizaciones", "Gaps & Oportunidades", "Diagnóstico"]
+    # Orden: Perfil, Clusters, Comparador, Competidores, Matriz Kamensky, Visualizaciones, Gaps, Diagnóstico
+    tab_names = ["Perfil", "Clusters", "Comparador", "Competidores", "Matriz Kamensky", "Visualizaciones", "Gaps & Oportunidades", "Diagnóstico"]
     if show_optimal_analysis:
         tab_names.insert(5, "Clusters Óptimos")
 
     if show_optimal_analysis:
-        tab_perfil, tab_comparador, tab_competidores, tab_kamensky, tab_segmentos, tab_clusters_opt, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
+        tab_perfil, tab_clusters, tab_comparador, tab_competidores, tab_kamensky, tab_clusters_opt, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
     else:
-        tab_perfil, tab_comparador, tab_competidores, tab_kamensky, tab_segmentos, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
+        tab_perfil, tab_clusters, tab_comparador, tab_competidores, tab_kamensky, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
 
     # ==========================================================================
     # TAB 1: PERFIL DE LA BODEGA FOCAL
@@ -1674,13 +1674,13 @@ def main():
             st.markdown(generate_kamensky_matrix_interpretation(competitors, target_winery))
 
     # ==========================================================================
-    # TAB: SEGMENTOS DE MERCADO (bodegas por cluster)
+    # TAB 2: CLUSTERS (bodegas por cluster)
     # ==========================================================================
-    with tab_segmentos:
-        st.header("Segmentos de Mercado (Clusters)")
+    with tab_clusters:
+        st.header("Clusters")
 
         st.markdown("""
-        Esta pestaña muestra todas las bodegas organizadas por segmento de mercado (cluster).
+        Esta pestaña muestra todas las bodegas organizadas por cluster.
         Se incluyen bodegas con probabilidad >= 30% de pertenecer a cada cluster.
         """)
 
@@ -1688,7 +1688,7 @@ def main():
             # Resumen de clusters
             cluster_counts = df_all_wineries['cluster'].value_counts().sort_index()
 
-            st.subheader("Resumen de Segmentos")
+            st.subheader("Resumen de Clusters")
             cols = st.columns(min(len(cluster_counts), 6))
             for i, (cluster_id, count) in enumerate(cluster_counts.items()):
                 col_idx = i % len(cols)
@@ -1701,7 +1701,7 @@ def main():
             # Selector de cluster
             cluster_options = [f"Cluster {int(c) + 1}" for c in sorted(df_all_wineries['cluster'].unique())]
             selected_cluster_name = st.selectbox(
-                "Selecciona un segmento para ver sus bodegas:",
+                "Selecciona un cluster para ver sus bodegas:",
                 cluster_options,
                 index=int(target_cluster)
             )
@@ -1728,7 +1728,7 @@ def main():
 
             # Mostrar si es el cluster de la bodega focal
             if selected_cluster_id == target_cluster:
-                st.success(f"Este es el segmento de mercado de **{target_winery}** (bodega focal)")
+                st.success(f"Este es el cluster de **{target_winery}** (bodega focal)")
 
             # Preparar columnas para mostrar
             display_cols = ['winery', 'avg_points', 'avg_price', 'n_wines', 'main_province', 'main_variety']
@@ -1759,7 +1759,7 @@ def main():
             )
 
             # Estadísticas del cluster
-            st.subheader("Estadísticas del Segmento")
+            st.subheader("Estadísticas del Cluster")
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Precio Medio", f"${cluster_wineries['avg_price'].mean():.2f}")
             col2.metric("Puntuación Media", f"{cluster_wineries['avg_points'].mean():.1f}")
