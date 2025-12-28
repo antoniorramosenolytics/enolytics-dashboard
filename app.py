@@ -1495,7 +1495,6 @@ def main():
     **Análisis de Competidores - Cluster {target_cluster + 1}**
 
     De las **{n_total} bodegas** totales, se analizan **{n_cluster} bodegas** que pertenecen al mismo segmento de mercado (Cluster {target_cluster + 1}).
-    El análisis Kamensky se realiza solo entre competidores del mismo cluster, lo cual es metodológicamente correcto.
     """)
 
     # ==========================================================================
