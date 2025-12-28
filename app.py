@@ -1126,7 +1126,7 @@ def plot_competition_heatmap(df, target_winery, n_top=15):
 
     fig = go.Figure(data=go.Heatmap(
         z=prob_matrix,
-        x=[f'C{i}' for i in range(len(prob_cols))],
+        x=[f'C{i+1}' for i in range(len(prob_cols))],
         y=competitors['winery'].values,
         colorscale='YlOrRd',
         colorbar=dict(title='Probabilidad'),
@@ -1446,7 +1446,7 @@ def main():
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Provincia", target_data['main_province'])
         col2.metric("Variedad Principal", target_data['main_variety'])
-        col3.metric("Cluster Principal", int(target_data['cluster']))
+        col3.metric("Cluster Principal", int(target_data['cluster']) + 1)
         col4.metric("Nº Variedades", int(target_data['n_varieties']))
 
         # Radar Chart del perfil
