@@ -47,6 +47,7 @@ else:
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 
 import torch
 import torch.nn as nn
@@ -328,6 +329,181 @@ def train_model(X_scaled, n_clusters=7, latent_dim=10, n_epochs=50):
         soft_assignments = model(X_tensor)[2].numpy()
 
     return model, soft_assignments
+
+
+@st.cache_data
+def calculate_optimal_clusters(X_scaled, k_range=(2, 15)):
+    """
+    Calcula métricas para determinar el número óptimo de clusters.
+
+    Métodos:
+    - Elbow (Inercia/SSE): Buscar el "codo" donde la curva se aplana
+    - Silhouette: Valor más alto indica mejor separación (rango -1 a 1)
+    - Calinski-Harabasz: Valor más alto es mejor
+    - Davies-Bouldin: Valor más bajo es mejor
+
+    Returns:
+        dict con métricas para cada k
+    """
+    k_min, k_max = k_range
+    # Ajustar k_max si hay pocas muestras
+    k_max = min(k_max, len(X_scaled) - 1)
+
+    if k_max < k_min:
+        k_max = k_min + 1
+
+    results = {
+        'k_values': [],
+        'inertia': [],
+        'silhouette': [],
+        'calinski_harabasz': [],
+        'davies_bouldin': []
+    }
+
+    for k in range(k_min, k_max + 1):
+        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(X_scaled)
+
+        results['k_values'].append(k)
+        results['inertia'].append(kmeans.inertia_)
+
+        # Silhouette requiere al menos 2 clusters y menos clusters que muestras
+        if k >= 2 and k < len(X_scaled):
+            results['silhouette'].append(silhouette_score(X_scaled, labels))
+            results['calinski_harabasz'].append(calinski_harabasz_score(X_scaled, labels))
+            results['davies_bouldin'].append(davies_bouldin_score(X_scaled, labels))
+        else:
+            results['silhouette'].append(0)
+            results['calinski_harabasz'].append(0)
+            results['davies_bouldin'].append(float('inf'))
+
+    return results
+
+
+def find_optimal_k(results):
+    """
+    Determina el número óptimo de clusters basándose en múltiples métricas.
+
+    Estrategia:
+    1. Elbow: Detecta el punto de inflexión usando la segunda derivada
+    2. Silhouette: k con el valor máximo
+    3. Calinski-Harabasz: k con el valor máximo
+    4. Davies-Bouldin: k con el valor mínimo
+    5. Consenso: Votación ponderada de los métodos
+    """
+    k_values = results['k_values']
+
+    # Método del codo (usando segunda derivada)
+    inertia = np.array(results['inertia'])
+    if len(inertia) > 2:
+        # Primera derivada
+        d1 = np.diff(inertia)
+        # Segunda derivada
+        d2 = np.diff(d1)
+        # El codo está donde la segunda derivada es máxima (cambio más pronunciado)
+        elbow_idx = np.argmax(d2) + 2  # +2 porque perdemos 2 elementos con las derivadas
+        elbow_k = k_values[min(elbow_idx, len(k_values) - 1)]
+    else:
+        elbow_k = k_values[0]
+
+    # Silhouette: máximo
+    silhouette_k = k_values[np.argmax(results['silhouette'])]
+
+    # Calinski-Harabasz: máximo
+    ch_k = k_values[np.argmax(results['calinski_harabasz'])]
+
+    # Davies-Bouldin: mínimo
+    db_k = k_values[np.argmin(results['davies_bouldin'])]
+
+    # Consenso ponderado
+    votes = {}
+    weights = {'elbow': 1.0, 'silhouette': 1.5, 'calinski': 1.0, 'davies': 1.0}
+
+    for k, weight in [(elbow_k, weights['elbow']),
+                       (silhouette_k, weights['silhouette']),
+                       (ch_k, weights['calinski']),
+                       (db_k, weights['davies'])]:
+        votes[k] = votes.get(k, 0) + weight
+
+    consensus_k = max(votes, key=votes.get)
+
+    return {
+        'elbow': elbow_k,
+        'silhouette': silhouette_k,
+        'calinski_harabasz': ch_k,
+        'davies_bouldin': db_k,
+        'consensus': consensus_k,
+        'votes': votes
+    }
+
+
+def plot_cluster_metrics(results, optimal):
+    """Genera gráficos de las 4 métricas de clustering."""
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=(
+            f'Método del Codo (Elbow) - Óptimo: k={optimal["elbow"]}',
+            f'Silhouette Score - Óptimo: k={optimal["silhouette"]}',
+            f'Calinski-Harabasz Index - Óptimo: k={optimal["calinski_harabasz"]}',
+            f'Davies-Bouldin Index - Óptimo: k={optimal["davies_bouldin"]}'
+        )
+    )
+
+    k_values = results['k_values']
+
+    # Elbow (Inercia)
+    fig.add_trace(
+        go.Scatter(x=k_values, y=results['inertia'], mode='lines+markers',
+                   name='Inercia', line=dict(color='#3498db')),
+        row=1, col=1
+    )
+    fig.add_vline(x=optimal['elbow'], line_dash="dash", line_color="red",
+                  annotation_text=f"k={optimal['elbow']}", row=1, col=1)
+
+    # Silhouette
+    fig.add_trace(
+        go.Scatter(x=k_values, y=results['silhouette'], mode='lines+markers',
+                   name='Silhouette', line=dict(color='#2ecc71')),
+        row=1, col=2
+    )
+    fig.add_vline(x=optimal['silhouette'], line_dash="dash", line_color="red",
+                  annotation_text=f"k={optimal['silhouette']}", row=1, col=2)
+
+    # Calinski-Harabasz
+    fig.add_trace(
+        go.Scatter(x=k_values, y=results['calinski_harabasz'], mode='lines+markers',
+                   name='Calinski-Harabasz', line=dict(color='#9b59b6')),
+        row=2, col=1
+    )
+    fig.add_vline(x=optimal['calinski_harabasz'], line_dash="dash", line_color="red",
+                  annotation_text=f"k={optimal['calinski_harabasz']}", row=2, col=1)
+
+    # Davies-Bouldin
+    fig.add_trace(
+        go.Scatter(x=k_values, y=results['davies_bouldin'], mode='lines+markers',
+                   name='Davies-Bouldin', line=dict(color='#e74c3c')),
+        row=2, col=2
+    )
+    fig.add_vline(x=optimal['davies_bouldin'], line_dash="dash", line_color="red",
+                  annotation_text=f"k={optimal['davies_bouldin']}", row=2, col=2)
+
+    fig.update_layout(
+        height=600,
+        showlegend=False,
+        title_text="Análisis del Número Óptimo de Clusters"
+    )
+
+    fig.update_xaxes(title_text="Número de Clusters (k)", row=1, col=1)
+    fig.update_xaxes(title_text="Número de Clusters (k)", row=1, col=2)
+    fig.update_xaxes(title_text="Número de Clusters (k)", row=2, col=1)
+    fig.update_xaxes(title_text="Número de Clusters (k)", row=2, col=2)
+
+    fig.update_yaxes(title_text="Inercia (SSE)", row=1, col=1)
+    fig.update_yaxes(title_text="Silhouette Score", row=1, col=2)
+    fig.update_yaxes(title_text="CH Index", row=2, col=1)
+    fig.update_yaxes(title_text="DB Index", row=2, col=2)
+
+    return fig
 
 
 def compute_kamensky_analysis(df_wineries, X_mc_scaled, X_rs_scaled, soft_assignments, target_winery):
@@ -1105,9 +1281,16 @@ def main():
 
     st.sidebar.header("Configuración")
 
-    # URL de Dropbox para cargar datos (funciona en local y en Streamlit Cloud)
-    # Nota: dl=1 fuerza la descarga directa del archivo
-    data_path = "https://www.dropbox.com/scl/fi/aslyox4hd6st71mdlb2mc/winemag-data_first150k.csv?rlkey=86hu9701tjcvs2st51dlugzvd&dl=1"
+    # Path relativo para Streamlit Cloud (el CSV debe estar en la carpeta data/)
+    import os
+    # Detectar si estamos en Streamlit Cloud o local
+    if os.path.exists("data/winemag-data_first150k.csv"):
+        data_path = "data/winemag-data_first150k.csv"
+    elif os.path.exists("DATA/winemag-data_first150k.csv"):
+        data_path = "DATA/winemag-data_first150k.csv"
+    else:
+        # Fallback para desarrollo local
+        data_path = "/Users/antoniorafaelramosrodriguez/Dropbox/ACEDE BODEGAS 2026/DATA/winemag-data_first150k.csv"
 
     # Selector de país
     st.sidebar.subheader("País")
@@ -1157,15 +1340,29 @@ def main():
         st.info("Prueba a ajustar los filtros.")
         st.stop()
 
-    # Ajustar número de clusters
-    max_clusters = min(12, n_wineries - 1)
-    default_clusters = min(7, max_clusters)
-    n_clusters = st.sidebar.slider("Número de clusters", 2, max_clusters, default_clusters)
-
     # Preparar features
     df_features, X_scaled, X_mc_scaled, X_rs_scaled, feature_names = prepare_features(df_wineries)
 
     st.sidebar.success(f"{len(df_wineries)} bodegas encontradas")
+
+    # Ajustar número de clusters
+    max_clusters = min(12, n_wineries - 1)
+    default_clusters = min(7, max_clusters)
+
+    # Análisis de número óptimo de clusters
+    st.sidebar.subheader("Número de Clusters")
+    show_optimal_analysis = st.sidebar.checkbox("Analizar nº óptimo de clusters", value=False)
+
+    if show_optimal_analysis:
+        with st.spinner("Calculando métricas de clustering..."):
+            cluster_results = calculate_optimal_clusters(X_scaled, k_range=(2, max_clusters))
+            optimal_k = find_optimal_k(cluster_results)
+
+        # Mostrar recomendación en sidebar
+        st.sidebar.info(f"**Recomendado: k={optimal_k['consensus']}**")
+        default_clusters = optimal_k['consensus']
+
+    n_clusters = st.sidebar.slider("Número de clusters", 2, max_clusters, default_clusters)
 
     winery_list = sorted(df_features['winery'].unique().tolist())
 
@@ -1185,221 +1382,343 @@ def main():
 
     competitors = df_analysis[df_analysis['winery'] != target_winery]
     target_data = df_analysis[df_analysis['winery'] == target_winery].iloc[0]
-
-    # ==========================================================================
-    # PERFIL DE LA BODEGA FOCAL
-    # ==========================================================================
-    st.header(f"Perfil de {target_winery}")
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Puntuación Media", f"{target_data['avg_points']:.1f}")
-    col2.metric("Precio Medio", f"${target_data['avg_price']:.2f}")
-    col3.metric("Sentimiento", f"{target_data['avg_sentiment']:.3f}")
-    col4.metric("Nº Vinos", int(target_data['n_wines']))
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Provincia", target_data['main_province'])
-    col2.metric("Variedad Principal", target_data['main_variety'])
-    col3.metric("Cluster Principal", int(target_data['cluster']))
-    col4.metric("Nº Variedades", int(target_data['n_varieties']))
-
-    # Radar Chart del perfil
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(plot_radar_chart(target_data, competitors), width='stretch')
-
-    with col2:
-        with st.expander("Interpretación del Perfil", expanded=True):
-            st.markdown(generate_profile_interpretation(target_data, competitors))
-
-    # Catálogo de vinos
-    with st.expander("Catálogo de Vinos de la Bodega", expanded=False):
-        target_wines = df_raw[df_raw['winery'] == target_winery].copy()
-        if len(target_wines) > 0:
-            wine_cols = ['designation', 'variety', 'price', 'province', 'points']
-            available_cols = [col for col in wine_cols if col in target_wines.columns]
-            wines_display = target_wines[available_cols].copy()
-            col_rename = {'designation': 'Nombre', 'variety': 'Variedad', 'price': 'Precio ($)',
-                          'province': 'Provincia', 'points': 'Puntuación'}
-            wines_display = wines_display.rename(columns={k: v for k, v in col_rename.items() if k in wines_display.columns})
-            if 'Puntuación' in wines_display.columns:
-                wines_display = wines_display.sort_values('Puntuación', ascending=False)
-            st.dataframe(wines_display, width='stretch', hide_index=True)
-
-    # ==========================================================================
-    # COMPARADOR DE BODEGAS
-    # ==========================================================================
-    st.header("Comparador de Bodegas")
-
-    wineries_to_compare = st.multiselect(
-        "Selecciona bodegas para comparar (2-4):",
-        winery_list,
-        default=[target_winery],
-        max_selections=4
-    )
-
-    if len(wineries_to_compare) >= 2:
-        comparison_chart = plot_comparison_chart(df_analysis, wineries_to_compare)
-        if comparison_chart:
-            st.plotly_chart(comparison_chart, width='stretch')
-    else:
-        st.info("Selecciona al menos 2 bodegas para comparar")
-
-    # ==========================================================================
-    # RESUMEN DE COMPETIDORES Y AMENAZAS
-    # ==========================================================================
-    st.header("Resumen de Competidores")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    for col, category in zip(
-        [col1, col2, col3, col4],
-        ['Core', 'Substitute', 'Marginal', 'Potential']
-    ):
-        count = len(competitors[competitors['kamensky_category'] == category])
-        pct = count / len(competitors) * 100 if len(competitors) > 0 else 0
-        col.metric(f"{category}", f"{count} ({pct:.1f}%)")
-
-    # Ranking de amenazas
-    st.subheader("Ranking de Amenazas")
-    st.plotly_chart(plot_threat_ranking(df_analysis, target_winery, 10), width='stretch')
-
-    # ==========================================================================
-    # MATRIZ DE KAMENSKY
-    # ==========================================================================
-    st.header("Matriz de Kamensky")
-
-    fig_kamensky = plot_kamensky_matrix(df_analysis, target_winery, mc_threshold, rs_threshold)
-    st.plotly_chart(fig_kamensky, width='stretch')
-
-    with st.expander("Interpretación de la Matriz", expanded=True):
-        st.markdown(generate_kamensky_matrix_interpretation(competitors, target_winery))
-
-    # ==========================================================================
-    # VISUALIZACIONES AVANZADAS
-    # ==========================================================================
-    st.header("Análisis Detallado")
-
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "Burbujas", "Red", "Distribución", "Clusters", "Precio vs MC", "RS Categoría"
-    ])
-
-    with tab1:
-        st.plotly_chart(plot_bubble_chart(df_analysis, target_winery), width='stretch')
-        st.markdown("""
-        **Interpretación**: El tamaño de cada burbuja representa el número de vinos de la bodega.
-        La estrella dorada marca la posición de la bodega focal.
-        """)
-
-    with tab2:
-        n_connections = st.slider("Número de conexiones", 5, 25, 15)
-        st.plotly_chart(plot_network_graph(df_analysis, target_winery, n_connections), width='stretch')
-        st.markdown("""
-        **Interpretación**: La red muestra las conexiones competitivas.
-        Nodos más grandes = mayor competencia con la bodega focal.
-        """)
-
-    with tab3:
-        st.plotly_chart(plot_category_distribution(df_analysis, target_winery), width='stretch')
-
-    with tab4:
-        n_top = st.slider("Número de top competidores", 10, 30, 15)
-        st.plotly_chart(plot_competition_heatmap(df_analysis, target_winery, n_top), width='stretch')
-
-    with tab5:
-        st.plotly_chart(plot_price_vs_mc(df_analysis, target_winery, mc_threshold), width='stretch')
-
-    with tab6:
-        st.plotly_chart(plot_rs_boxplot(df_analysis, target_winery, rs_threshold), width='stretch')
-
-    # ==========================================================================
-    # ANÁLISIS DE GAPS DE MERCADO
-    # ==========================================================================
-    st.header("Oportunidades de Mercado (Gap Analysis)")
-
     gaps_df = find_market_gaps(df_analysis, df_raw, target_winery)
 
-    if len(gaps_df) > 0:
-        col1, col2 = st.columns(2)
+    # ==========================================================================
+    # PESTAÑAS PRINCIPALES
+    # ==========================================================================
+    tab_names = ["Perfil", "Comparador", "Competidores", "Matriz Kamensky", "Visualizaciones", "Gaps & Oportunidades", "Diagnóstico"]
+    if show_optimal_analysis:
+        tab_names.insert(4, "Clusters Óptimos")
 
+    if show_optimal_analysis:
+        tab_perfil, tab_comparador, tab_competidores, tab_kamensky, tab_clusters, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
+    else:
+        tab_perfil, tab_comparador, tab_competidores, tab_kamensky, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
+
+    # ==========================================================================
+    # TAB 1: PERFIL DE LA BODEGA FOCAL
+    # ==========================================================================
+    with tab_perfil:
+        st.header(f"Perfil de {target_winery}")
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Puntuación Media", f"{target_data['avg_points']:.1f}")
+        col2.metric("Precio Medio", f"${target_data['avg_price']:.2f}")
+        col3.metric("Sentimiento", f"{target_data['avg_sentiment']:.3f}")
+        col4.metric("Nº Vinos", int(target_data['n_wines']))
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Provincia", target_data['main_province'])
+        col2.metric("Variedad Principal", target_data['main_variety'])
+        col3.metric("Cluster Principal", int(target_data['cluster']))
+        col4.metric("Nº Variedades", int(target_data['n_varieties']))
+
+        # Radar Chart del perfil
+        col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Gaps Identificados")
-            st.dataframe(gaps_df.head(10), width='stretch', hide_index=True)
+            st.plotly_chart(plot_radar_chart(target_data, competitors), width='stretch')
 
         with col2:
-            st.subheader("Distribución por Tipo")
-            gap_counts = gaps_df['type'].value_counts()
-            fig = px.pie(values=gap_counts.values, names=gap_counts.index, title='Tipos de Oportunidades')
-            st.plotly_chart(fig, width='stretch')
+            with st.expander("Interpretación del Perfil", expanded=True):
+                st.markdown(generate_profile_interpretation(target_data, competitors))
+
+        # Catálogo de vinos
+        with st.expander("Catálogo de Vinos de la Bodega", expanded=False):
+            target_wines = df_raw[df_raw['winery'] == target_winery].copy()
+            if len(target_wines) > 0:
+                wine_cols = ['designation', 'variety', 'price', 'province', 'points']
+                available_cols = [col for col in wine_cols if col in target_wines.columns]
+                wines_display = target_wines[available_cols].copy()
+                col_rename = {'designation': 'Nombre', 'variety': 'Variedad', 'price': 'Precio ($)',
+                              'province': 'Provincia', 'points': 'Puntuación'}
+                wines_display = wines_display.rename(columns={k: v for k, v in col_rename.items() if k in wines_display.columns})
+                if 'Puntuación' in wines_display.columns:
+                    wines_display = wines_display.sort_values('Puntuación', ascending=False)
+                st.dataframe(wines_display, width='stretch', hide_index=True)
+
+    # ==========================================================================
+    # TAB 2: COMPARADOR DE BODEGAS
+    # ==========================================================================
+    with tab_comparador:
+        st.header("Comparador de Bodegas")
 
         st.markdown("""
-        **Interpretación**: Los gaps representan nichos de mercado con poca o ninguna competencia.
-        - **Alta oportunidad**: 0 competidores en ese segmento
-        - **Media oportunidad**: 1-2 competidores en ese segmento
+        Selecciona entre 2 y 4 bodegas para comparar sus características principales.
+        La bodega focal está preseleccionada.
         """)
-    else:
-        st.info("No se identificaron gaps significativos en el mercado actual.")
 
-    # ==========================================================================
-    # TOP COMPETIDORES POR CATEGORÍA
-    # ==========================================================================
-    st.header("Top Competidores por Categoría")
-
-    category_selected = st.selectbox("Selecciona categoría:", ['Core', 'Substitute', 'Marginal', 'Potential'])
-
-    cat_competitors = competitors[competitors['kamensky_category'] == category_selected].nlargest(10, 'competition_score')
-
-    st.dataframe(
-        cat_competitors[['winery', 'competition_score', 'threat_score', 'market_commonality',
-                        'resource_similarity', 'avg_points', 'avg_price', 'main_province']].round(3),
-        width='stretch',
-        hide_index=True
-    )
-
-    # ==========================================================================
-    # DIAGNÓSTICO ESTRATÉGICO
-    # ==========================================================================
-    st.header("Diagnóstico Estratégico")
-
-    st.markdown(generate_strategic_diagnosis(target_data, competitors, mc_threshold, rs_threshold))
-
-    # ==========================================================================
-    # EXPORTAR DATOS
-    # ==========================================================================
-    st.header("Exportar Resultados")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        csv_competitors = competitors[['winery', 'kamensky_category', 'competition_score', 'threat_score',
-                                       'market_commonality', 'resource_similarity',
-                                       'avg_points', 'avg_price', 'main_province', 'main_variety']].to_csv(index=False)
-        st.download_button(
-            label="Descargar Competidores (CSV)",
-            data=csv_competitors,
-            file_name=f"competidores_{target_winery}.csv",
-            mime="text/csv"
+        wineries_to_compare = st.multiselect(
+            "Selecciona bodegas para comparar (2-4):",
+            winery_list,
+            default=[target_winery],
+            max_selections=4,
+            key="comparador_multiselect"
         )
 
-    with col2:
+        if len(wineries_to_compare) >= 2:
+            comparison_chart = plot_comparison_chart(df_analysis, wineries_to_compare)
+            if comparison_chart:
+                st.plotly_chart(comparison_chart, width='stretch')
+
+            # Tabla comparativa detallada
+            st.subheader("Tabla Comparativa Detallada")
+            compare_data = df_analysis[df_analysis['winery'].isin(wineries_to_compare)].copy()
+            compare_cols = ['winery', 'avg_points', 'avg_price', 'avg_sentiment', 'n_wines',
+                           'n_varieties', 'main_province', 'main_variety', 'kamensky_category']
+            compare_display = compare_data[compare_cols].copy()
+            compare_display.columns = ['Bodega', 'Puntuación', 'Precio ($)', 'Sentimiento', 'Nº Vinos',
+                                       'Nº Variedades', 'Provincia', 'Variedad Principal', 'Categoría Kamensky']
+            st.dataframe(compare_display.round(2), width='stretch', hide_index=True)
+
+            # Radar comparativo
+            st.subheader("Perfil Comparativo")
+            fig_radar_compare = go.Figure()
+
+            colors = ['#e74c3c', '#3498db', '#2ecc71', '#9b59b6']
+            categories = ['Precio', 'Calidad', 'Sentimiento', 'Diversidad', 'Volumen']
+
+            max_price = competitors['avg_price'].max()
+            max_points = 100
+            max_varieties = competitors['n_varieties'].max()
+            max_wines = competitors['n_wines'].max()
+
+            for i, winery_name in enumerate(wineries_to_compare):
+                winery_row = df_analysis[df_analysis['winery'] == winery_name].iloc[0]
+                values = [
+                    winery_row['avg_price'] / max_price if max_price > 0 else 0,
+                    winery_row['avg_points'] / max_points,
+                    (winery_row['avg_sentiment'] + 1) / 2,
+                    winery_row['n_varieties'] / max_varieties if max_varieties > 0 else 0,
+                    winery_row['n_wines'] / max_wines if max_wines > 0 else 0
+                ]
+                fig_radar_compare.add_trace(go.Scatterpolar(
+                    r=values + [values[0]],
+                    theta=categories + [categories[0]],
+                    fill='toself',
+                    name=winery_name,
+                    line_color=colors[i % len(colors)],
+                    opacity=0.7
+                ))
+
+            fig_radar_compare.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+                showlegend=True,
+                title='Comparativa de Perfiles',
+                height=500
+            )
+            st.plotly_chart(fig_radar_compare, width='stretch')
+
+        else:
+            st.info("Selecciona al menos 2 bodegas para comparar")
+
+    # ==========================================================================
+    # TAB 3: RESUMEN DE COMPETIDORES Y AMENAZAS
+    # ==========================================================================
+    with tab_competidores:
+        st.header("Resumen de Competidores")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        for col, category in zip(
+            [col1, col2, col3, col4],
+            ['Core', 'Substitute', 'Marginal', 'Potential']
+        ):
+            count = len(competitors[competitors['kamensky_category'] == category])
+            pct = count / len(competitors) * 100 if len(competitors) > 0 else 0
+            col.metric(f"{category}", f"{count} ({pct:.1f}%)")
+
+        # Ranking de amenazas
+        st.subheader("Ranking de Amenazas")
+        st.plotly_chart(plot_threat_ranking(df_analysis, target_winery, 10), width='stretch')
+
+        # Top Competidores por Categoría
+        st.subheader("Top Competidores por Categoría")
+
+        category_selected = st.selectbox("Selecciona categoría:", ['Core', 'Substitute', 'Marginal', 'Potential'])
+
+        cat_competitors = competitors[competitors['kamensky_category'] == category_selected].nlargest(10, 'competition_score')
+
+        st.dataframe(
+            cat_competitors[['winery', 'competition_score', 'threat_score', 'market_commonality',
+                            'resource_similarity', 'avg_points', 'avg_price', 'main_province']].round(3),
+            width='stretch',
+            hide_index=True
+        )
+
+    # ==========================================================================
+    # TAB 3: MATRIZ DE KAMENSKY
+    # ==========================================================================
+    with tab_kamensky:
+        st.header("Matriz de Kamensky")
+
+        fig_kamensky = plot_kamensky_matrix(df_analysis, target_winery, mc_threshold, rs_threshold)
+        st.plotly_chart(fig_kamensky, width='stretch')
+
+        with st.expander("Interpretación de la Matriz", expanded=True):
+            st.markdown(generate_kamensky_matrix_interpretation(competitors, target_winery))
+
+    # ==========================================================================
+    # TAB 4: ANÁLISIS DE NÚMERO ÓPTIMO DE CLUSTERS (condicional)
+    # ==========================================================================
+    if show_optimal_analysis:
+        with tab_clusters:
+            st.header("Análisis del Número Óptimo de Clusters")
+
+            # Mostrar gráfico con los 4 métodos
+            fig_metrics = plot_cluster_metrics(cluster_results, optimal_k)
+            st.plotly_chart(fig_metrics, width='stretch')
+
+            # Tabla resumen
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Resultados por Método")
+                results_df = pd.DataFrame({
+                    'Método': ['Elbow (Codo)', 'Silhouette', 'Calinski-Harabasz', 'Davies-Bouldin'],
+                    'k Óptimo': [optimal_k['elbow'], optimal_k['silhouette'],
+                                optimal_k['calinski_harabasz'], optimal_k['davies_bouldin']],
+                    'Criterio': ['Punto de inflexión', 'Máximo valor', 'Máximo valor', 'Mínimo valor']
+                })
+                st.dataframe(results_df, hide_index=True, width='stretch')
+
+            with col2:
+                st.subheader("Recomendación Final")
+                st.metric("Número Óptimo de Clusters (Consenso)", optimal_k['consensus'])
+
+                st.markdown(f"""
+                **Votación ponderada:**
+                - Silhouette tiene peso 1.5x (mejor indicador de separación)
+                - Los demás métodos tienen peso 1.0x
+
+                **Clusters actuales:** {n_clusters}
+                {"✅ Usando el valor óptimo" if n_clusters == optimal_k['consensus'] else f"⚠️ Considera cambiar a k={optimal_k['consensus']}"}
+                """)
+
+            with st.expander("Interpretación de los Métodos", expanded=False):
+                st.markdown("""
+                ### Métodos de Validación de Clusters
+
+                | Método | Descripción | Interpretación |
+                |--------|-------------|----------------|
+                | **Elbow (Codo)** | Mide la inercia (suma de distancias al cuadrado dentro de cada cluster) | Buscar el "codo" donde la curva se aplana. Añadir más clusters no mejora significativamente |
+                | **Silhouette** | Mide qué tan similar es un punto a su cluster vs otros clusters (-1 a 1) | Valores más altos indican clusters bien definidos. >0.5 es bueno, >0.7 es excelente |
+                | **Calinski-Harabasz** | Ratio de dispersión entre clusters vs dentro de clusters | Valores más altos indican clusters densos y bien separados |
+                | **Davies-Bouldin** | Promedio de similitud entre cada cluster y su más similar | Valores más bajos indican mejor separación entre clusters |
+
+                ### ¿Cómo se calcula el consenso?
+                Se usa una votación ponderada donde Silhouette tiene mayor peso (1.5x) porque es el indicador más robusto
+                de la calidad de separación de los clusters. El valor con más votos ponderados es el recomendado.
+                """)
+
+    # ==========================================================================
+    # TAB 5: VISUALIZACIONES AVANZADAS
+    # ==========================================================================
+    with tab_viz:
+        st.header("Visualizaciones Avanzadas")
+
+        subtab1, subtab2, subtab3, subtab4, subtab5, subtab6 = st.tabs([
+            "Burbujas", "Red", "Distribución", "Heatmap Clusters", "Precio vs MC", "RS Categoría"
+        ])
+
+        with subtab1:
+            st.plotly_chart(plot_bubble_chart(df_analysis, target_winery), width='stretch')
+            st.markdown("""
+            **Interpretación**: El tamaño de cada burbuja representa el número de vinos de la bodega.
+            La estrella dorada marca la posición de la bodega focal.
+            """)
+
+        with subtab2:
+            n_connections = st.slider("Número de conexiones", 5, 25, 15)
+            st.plotly_chart(plot_network_graph(df_analysis, target_winery, n_connections), width='stretch')
+            st.markdown("""
+            **Interpretación**: La red muestra las conexiones competitivas.
+            Nodos más grandes = mayor competencia con la bodega focal.
+            """)
+
+        with subtab3:
+            st.plotly_chart(plot_category_distribution(df_analysis, target_winery), width='stretch')
+
+        with subtab4:
+            n_top = st.slider("Número de top competidores", 10, 30, 15)
+            st.plotly_chart(plot_competition_heatmap(df_analysis, target_winery, n_top), width='stretch')
+
+        with subtab5:
+            st.plotly_chart(plot_price_vs_mc(df_analysis, target_winery, mc_threshold), width='stretch')
+
+        with subtab6:
+            st.plotly_chart(plot_rs_boxplot(df_analysis, target_winery, rs_threshold), width='stretch')
+
+    # ==========================================================================
+    # TAB 6: ANÁLISIS DE GAPS DE MERCADO
+    # ==========================================================================
+    with tab_gaps:
+        st.header("Oportunidades de Mercado (Gap Analysis)")
+
         if len(gaps_df) > 0:
-            csv_gaps = gaps_df.to_csv(index=False)
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Gaps Identificados")
+                st.dataframe(gaps_df.head(10), width='stretch', hide_index=True)
+
+            with col2:
+                st.subheader("Distribución por Tipo")
+                gap_counts = gaps_df['type'].value_counts()
+                fig = px.pie(values=gap_counts.values, names=gap_counts.index, title='Tipos de Oportunidades')
+                st.plotly_chart(fig, width='stretch')
+
+            st.markdown("""
+            **Interpretación**: Los gaps representan nichos de mercado con poca o ninguna competencia.
+            - **Alta oportunidad**: 0 competidores en ese segmento
+            - **Media oportunidad**: 1-2 competidores en ese segmento
+            """)
+        else:
+            st.info("No se identificaron gaps significativos en el mercado actual.")
+
+    # ==========================================================================
+    # TAB 7: DIAGNÓSTICO ESTRATÉGICO
+    # ==========================================================================
+    with tab_diagnostico:
+        st.header("Diagnóstico Estratégico")
+
+        st.markdown(generate_strategic_diagnosis(target_data, competitors, mc_threshold, rs_threshold))
+
+        # Exportar Resultados
+        st.subheader("Exportar Resultados")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            csv_competitors = competitors[['winery', 'kamensky_category', 'competition_score', 'threat_score',
+                                           'market_commonality', 'resource_similarity',
+                                           'avg_points', 'avg_price', 'main_province', 'main_variety']].to_csv(index=False)
             st.download_button(
-                label="Descargar Gaps (CSV)",
-                data=csv_gaps,
-                file_name=f"gaps_mercado_{target_winery}.csv",
+                label="Descargar Competidores (CSV)",
+                data=csv_competitors,
+                file_name=f"competidores_{target_winery}.csv",
                 mime="text/csv"
             )
 
-    with col3:
-        report = generate_pdf_report(target_data, competitors, df_analysis, target_winery,
-                                     mc_threshold, rs_threshold, gaps_df)
-        st.download_button(
-            label="Descargar Informe (TXT)",
-            data=report,
-            file_name=f"informe_{target_winery}_{datetime.now().strftime('%Y%m%d')}.txt",
-            mime="text/plain"
-        )
+        with col2:
+            if len(gaps_df) > 0:
+                csv_gaps = gaps_df.to_csv(index=False)
+                st.download_button(
+                    label="Descargar Gaps (CSV)",
+                    data=csv_gaps,
+                    file_name=f"gaps_mercado_{target_winery}.csv",
+                    mime="text/csv"
+                )
+
+        with col3:
+            report = generate_pdf_report(target_data, competitors, df_analysis, target_winery,
+                                         mc_threshold, rs_threshold, gaps_df)
+            st.download_button(
+                label="Descargar Informe (TXT)",
+                data=report,
+                file_name=f"informe_{target_winery}_{datetime.now().strftime('%Y%m%d')}.txt",
+                mime="text/plain"
+            )
 
     # Footer
     st.markdown("---")
