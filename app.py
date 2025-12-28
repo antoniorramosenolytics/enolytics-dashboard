@@ -512,31 +512,90 @@ def plot_cluster_metrics(results, optimal):
     return fig
 
 
-def compute_kamensky_analysis(df_wineries, X_mc_scaled, X_rs_scaled, soft_assignments, target_winery):
-    """Calcula el análisis de Kamensky para una bodega objetivo."""
+def compute_kamensky_analysis(df_wineries, X_mc_scaled, X_rs_scaled, soft_assignments, target_winery, cluster_prob_threshold=0.3):
+    """
+    Calcula el análisis de Kamensky para una bodega objetivo.
+
+    IMPORTANTE: El análisis Kamensky se realiza SOLO sobre las bodegas que pertenecen
+    al mismo cluster que la bodega focal (o tienen alta probabilidad de pertenecer).
+
+    Esto es metodológicamente correcto porque:
+    1. Los clusters identifican segmentos de mercado similares
+    2. Solo tiene sentido comparar competidores dentro del mismo segmento
+    3. Una bodega premium no compite directamente con una de bajo coste
+
+    Args:
+        df_wineries: DataFrame con datos de bodegas
+        X_mc_scaled: Features de Market Commonality escaladas
+        X_rs_scaled: Features de Resource Similarity escaladas
+        soft_assignments: Probabilidades de pertenencia a cada cluster
+        target_winery: Nombre de la bodega focal
+        cluster_prob_threshold: Umbral mínimo de probabilidad para incluir una bodega
+                               en el análisis (default 0.3 = 30%)
+    """
     df = df_wineries.copy()
 
+    # Asignar probabilidades de cluster a todas las bodegas
+    for i in range(soft_assignments.shape[1]):
+        df[f'prob_cluster_{i}'] = soft_assignments[:, i]
+    df['cluster'] = np.argmax(soft_assignments, axis=1)
+
+    # Identificar el cluster principal de la bodega focal
     target_idx = df[df['winery'] == target_winery].index[0]
+    target_cluster = df.loc[target_idx, 'cluster']
     target_probs = soft_assignments[target_idx]
 
-    similarities = cosine_similarity([target_probs], soft_assignments)[0]
-    df['competition_score'] = similarities
+    # Filtrar bodegas que pertenecen al mismo cluster o tienen alta probabilidad
+    # de pertenecer al cluster de la bodega focal
+    prob_col = f'prob_cluster_{target_cluster}'
+    cluster_mask = (df['cluster'] == target_cluster) | (df[prob_col] >= cluster_prob_threshold)
 
-    target_mc = X_mc_scaled[target_idx].reshape(1, -1)
-    target_rs = X_rs_scaled[target_idx].reshape(1, -1)
+    # Guardar info de todas las bodegas para contexto
+    df_all = df.copy()
+    n_total = len(df)
 
-    mc_similarities = cosine_similarity(target_mc, X_mc_scaled)[0]
-    rs_similarities = cosine_similarity(target_rs, X_rs_scaled)[0]
+    # Filtrar solo bodegas del cluster relevante
+    df_cluster = df[cluster_mask].copy()
+    cluster_indices = df_cluster.index.tolist()
+    n_cluster = len(df_cluster)
 
+    # Calcular competition_score sobre TODAS las bodegas (para referencia)
+    similarities_all = cosine_similarity([target_probs], soft_assignments)[0]
+    df_all['competition_score'] = similarities_all
+
+    # Recalcular índices para el subset del cluster
+    X_mc_cluster = X_mc_scaled[cluster_indices]
+    X_rs_cluster = X_rs_scaled[cluster_indices]
+    soft_cluster = soft_assignments[cluster_indices]
+
+    # Encontrar nuevo índice de la bodega focal en el subset
+    target_idx_cluster = df_cluster.index.get_loc(target_idx) if target_idx in df_cluster.index else 0
+
+    # Calcular similaridades SOLO dentro del cluster
+    target_mc = X_mc_cluster[target_idx_cluster].reshape(1, -1)
+    target_rs = X_rs_cluster[target_idx_cluster].reshape(1, -1)
+
+    mc_similarities = cosine_similarity(target_mc, X_mc_cluster)[0]
+    rs_similarities = cosine_similarity(target_rs, X_rs_cluster)[0]
+
+    # Normalizar MC y RS dentro del cluster
     mc_min, mc_max = mc_similarities.min(), mc_similarities.max()
     rs_min, rs_max = rs_similarities.min(), rs_similarities.max()
 
-    df['market_commonality'] = (mc_similarities - mc_min) / (mc_max - mc_min + 1e-10)
-    df['resource_similarity'] = (rs_similarities - rs_min) / (rs_max - rs_min + 1e-10)
+    df_cluster['market_commonality'] = (mc_similarities - mc_min) / (mc_max - mc_min + 1e-10)
+    df_cluster['resource_similarity'] = (rs_similarities - rs_min) / (rs_max - rs_min + 1e-10)
 
-    mc_threshold = df[df['winery'] != target_winery]['market_commonality'].median()
-    rs_threshold = df[df['winery'] != target_winery]['resource_similarity'].median()
+    # Competition score dentro del cluster
+    target_probs_cluster = soft_cluster[target_idx_cluster]
+    similarities_cluster = cosine_similarity([target_probs_cluster], soft_cluster)[0]
+    df_cluster['competition_score'] = similarities_cluster
 
+    # Calcular umbrales SOLO sobre competidores del cluster (excluyendo focal)
+    competitors_mask = df_cluster['winery'] != target_winery
+    mc_threshold = df_cluster[competitors_mask]['market_commonality'].median()
+    rs_threshold = df_cluster[competitors_mask]['resource_similarity'].median()
+
+    # Categorizar según Kamensky
     def categorize(row):
         if row['winery'] == target_winery:
             return 'Focal'
@@ -551,17 +610,18 @@ def compute_kamensky_analysis(df_wineries, X_mc_scaled, X_rs_scaled, soft_assign
         else:
             return 'Potential'
 
-    df['kamensky_category'] = df.apply(categorize, axis=1)
+    df_cluster['kamensky_category'] = df_cluster.apply(categorize, axis=1)
 
-    for i in range(soft_assignments.shape[1]):
-        df[f'prob_cluster_{i}'] = soft_assignments[:, i]
+    # Calcular score de amenaza
+    df_cluster['threat_score'] = calculate_threat_score(df_cluster, target_winery)
 
-    df['cluster'] = np.argmax(soft_assignments, axis=1)
+    # Añadir metadatos del análisis
+    df_cluster.attrs['n_total_wineries'] = n_total
+    df_cluster.attrs['n_cluster_wineries'] = n_cluster
+    df_cluster.attrs['target_cluster'] = target_cluster
+    df_cluster.attrs['cluster_prob_threshold'] = cluster_prob_threshold
 
-    # Calcular score de amenaza combinado
-    df['threat_score'] = calculate_threat_score(df, target_winery)
-
-    return df, mc_threshold, rs_threshold
+    return df_cluster, mc_threshold, rs_threshold
 
 
 def calculate_threat_score(df, target_winery):
@@ -1418,6 +1478,19 @@ def main():
     competitors = df_analysis[df_analysis['winery'] != target_winery]
     target_data = df_analysis[df_analysis['winery'] == target_winery].iloc[0]
     gaps_df = find_market_gaps(df_analysis, df_raw, target_winery)
+
+    # Obtener metadatos del análisis
+    n_total = df_analysis.attrs.get('n_total_wineries', len(df_wineries))
+    n_cluster = df_analysis.attrs.get('n_cluster_wineries', len(df_analysis))
+    target_cluster = df_analysis.attrs.get('target_cluster', int(target_data['cluster']))
+
+    # Mostrar información del análisis por cluster
+    st.info(f"""
+    **Análisis de Competidores - Cluster {target_cluster + 1}**
+
+    De las **{n_total} bodegas** totales, se analizan **{n_cluster} bodegas** que pertenecen al mismo segmento de mercado (Cluster {target_cluster + 1}).
+    El análisis Kamensky se realiza solo entre competidores del mismo cluster, lo cual es metodológicamente correcto.
+    """)
 
     # ==========================================================================
     # PESTAÑAS PRINCIPALES
