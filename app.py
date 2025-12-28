@@ -1308,24 +1308,22 @@ def main():
         placeholder="Elige un país..."
     )
 
-    # Si no hay país seleccionado, mostrar mensaje y detener
-    if selected_country is None:
-        st.info("Por favor, selecciona un país en el panel lateral para comenzar el análisis.")
-        st.stop()
+    # Usar país temporal para mostrar los demás filtros (aunque no se use hasta seleccionar)
+    temp_country = selected_country if selected_country else 'Todos'
 
     # Selector de región
     st.sidebar.subheader("Región")
-    available_regions = get_available_regions(data_path, selected_country)
+    available_regions = get_available_regions(data_path, temp_country)
     selected_region = st.sidebar.selectbox("Selecciona la región:", available_regions, index=0)
 
     # Selector de variedad
     st.sidebar.subheader("Variedad")
-    available_varieties = get_available_varieties(data_path, selected_country, selected_region)
+    available_varieties = get_available_varieties(data_path, temp_country, selected_region)
     selected_variety = st.sidebar.selectbox("Selecciona la variedad:", available_varieties, index=0)
 
     # Rango de precios
     st.sidebar.subheader("Rango de Precios")
-    min_price, max_price = get_price_range(data_path, selected_country)
+    min_price, max_price = get_price_range(data_path, temp_country)
     price_range = st.sidebar.slider("Rango de precios ($):",
                                      min_value=int(min_price),
                                      max_value=int(max_price),
@@ -1333,6 +1331,11 @@ def main():
 
     # Parámetros
     min_wines = st.sidebar.slider("Mínimo de vinos por bodega", 2, 10, 3)
+
+    # Ahora verificar si hay país seleccionado (después de mostrar todos los filtros)
+    if selected_country is None:
+        st.info("Por favor, selecciona un país en el panel lateral para comenzar el análisis.")
+        st.stop()
 
     # Cargar datos
     region_msg = f" - {selected_region}" if selected_region != 'Todas' else ""
