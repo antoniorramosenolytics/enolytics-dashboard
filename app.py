@@ -1571,19 +1571,21 @@ def main():
         )
 
         if len(wineries_to_compare) >= 2:
-            comparison_chart = plot_comparison_chart(df_analysis, wineries_to_compare)
+            # Usar df_all_wineries para el comparador (tiene todas las bodegas)
+            comparison_chart = plot_comparison_chart(df_all_wineries, wineries_to_compare)
             if comparison_chart:
                 st.plotly_chart(comparison_chart, width='stretch')
 
             # Tabla comparativa detallada
             st.subheader("Tabla Comparativa Detallada")
-            compare_data = df_analysis[df_analysis['winery'].isin(wineries_to_compare)].copy()
+            compare_data = df_all_wineries[df_all_wineries['winery'].isin(wineries_to_compare)].copy()
             compare_cols = ['winery', 'avg_points', 'avg_price', 'avg_sentiment', 'n_wines',
-                           'n_varieties', 'main_province', 'main_variety', 'kamensky_category']
+                           'n_varieties', 'main_province', 'main_variety', 'cluster']
             compare_display = compare_data[compare_cols].copy()
+            compare_display['cluster'] = compare_display['cluster'] + 1  # Mostrar desde 1
             compare_display.columns = ['Bodega', 'Puntuación', 'Precio ($)', 'Sentimiento', 'Nº Vinos',
-                                       'Nº Variedades', 'Provincia', 'Variedad Principal', 'Categoría Kamensky']
-            st.dataframe(compare_display.round(2), width='stretch', hide_index=True)
+                                       'Nº Variedades', 'Provincia', 'Variedad Principal', 'Cluster']
+            st.dataframe(compare_display.round(2).reset_index(drop=True), width='stretch', hide_index=True)
 
             # Radar comparativo
             st.subheader("Perfil Comparativo")
@@ -1592,13 +1594,13 @@ def main():
             colors = ['#e74c3c', '#3498db', '#2ecc71', '#9b59b6']
             categories = ['Precio', 'Calidad', 'Sentimiento', 'Diversidad', 'Volumen']
 
-            max_price = competitors['avg_price'].max()
+            max_price = df_all_wineries['avg_price'].max()
             max_points = 100
-            max_varieties = competitors['n_varieties'].max()
-            max_wines = competitors['n_wines'].max()
+            max_varieties = df_all_wineries['n_varieties'].max()
+            max_wines = df_all_wineries['n_wines'].max()
 
             for i, winery_name in enumerate(wineries_to_compare):
-                winery_row = df_analysis[df_analysis['winery'] == winery_name].iloc[0]
+                winery_row = df_all_wineries[df_all_wineries['winery'] == winery_name].iloc[0]
                 values = [
                     winery_row['avg_price'] / max_price if max_price > 0 else 0,
                     winery_row['avg_points'] / max_points,
