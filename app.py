@@ -615,11 +615,15 @@ def compute_kamensky_analysis(df_wineries, X_mc_scaled, X_rs_scaled, soft_assign
     # Calcular score de amenaza
     df_cluster['threat_score'] = calculate_threat_score(df_cluster, target_winery)
 
+    # Resetear índice para evitar problemas de serialización con int64
+    df_cluster = df_cluster.reset_index(drop=True)
+
     # Añadir metadatos del análisis
     df_cluster.attrs['n_total_wineries'] = n_total
     df_cluster.attrs['n_cluster_wineries'] = n_cluster
-    df_cluster.attrs['target_cluster'] = target_cluster
+    df_cluster.attrs['target_cluster'] = int(target_cluster)  # Convertir a int nativo
     df_cluster.attrs['cluster_prob_threshold'] = cluster_prob_threshold
+    df_cluster.attrs['df_all_wineries'] = df  # Guardar todas las bodegas para la pestaña de clusters
 
     return df_cluster, mc_threshold, rs_threshold
 
@@ -1492,17 +1496,20 @@ def main():
     El análisis Kamensky se realiza solo entre competidores del mismo cluster, lo cual es metodológicamente correcto.
     """)
 
+    # Obtener todas las bodegas con sus clusters para la pestaña de Segmentos
+    df_all_wineries = df_analysis.attrs.get('df_all_wineries', None)
+
     # ==========================================================================
     # PESTAÑAS PRINCIPALES
     # ==========================================================================
-    tab_names = ["Perfil", "Comparador", "Competidores", "Matriz Kamensky", "Visualizaciones", "Gaps & Oportunidades", "Diagnóstico"]
+    tab_names = ["Perfil", "Comparador", "Competidores", "Matriz Kamensky", "Segmentos", "Visualizaciones", "Gaps & Oportunidades", "Diagnóstico"]
     if show_optimal_analysis:
-        tab_names.insert(4, "Clusters Óptimos")
+        tab_names.insert(5, "Clusters Óptimos")
 
     if show_optimal_analysis:
-        tab_perfil, tab_comparador, tab_competidores, tab_kamensky, tab_clusters, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
+        tab_perfil, tab_comparador, tab_competidores, tab_kamensky, tab_segmentos, tab_clusters_opt, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
     else:
-        tab_perfil, tab_comparador, tab_competidores, tab_kamensky, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
+        tab_perfil, tab_comparador, tab_competidores, tab_kamensky, tab_segmentos, tab_viz, tab_gaps, tab_diagnostico = st.tabs(tab_names)
 
     # ==========================================================================
     # TAB 1: PERFIL DE LA BODEGA FOCAL
@@ -1667,10 +1674,106 @@ def main():
             st.markdown(generate_kamensky_matrix_interpretation(competitors, target_winery))
 
     # ==========================================================================
-    # TAB 4: ANÁLISIS DE NÚMERO ÓPTIMO DE CLUSTERS (condicional)
+    # TAB: SEGMENTOS DE MERCADO (bodegas por cluster)
+    # ==========================================================================
+    with tab_segmentos:
+        st.header("Segmentos de Mercado (Clusters)")
+
+        st.markdown("""
+        Esta pestaña muestra todas las bodegas organizadas por segmento de mercado (cluster).
+        Se incluyen bodegas con probabilidad >= 30% de pertenecer a cada cluster.
+        """)
+
+        if df_all_wineries is not None:
+            # Resumen de clusters
+            cluster_counts = df_all_wineries['cluster'].value_counts().sort_index()
+
+            st.subheader("Resumen de Segmentos")
+            cols = st.columns(min(len(cluster_counts), 6))
+            for i, (cluster_id, count) in enumerate(cluster_counts.items()):
+                col_idx = i % len(cols)
+                is_focal = (cluster_id == target_cluster)
+                label = f"Cluster {int(cluster_id) + 1}" + (" ⭐" if is_focal else "")
+                cols[col_idx].metric(label, f"{count} bodegas")
+
+            st.markdown("---")
+
+            # Selector de cluster
+            cluster_options = [f"Cluster {int(c) + 1}" for c in sorted(df_all_wineries['cluster'].unique())]
+            selected_cluster_name = st.selectbox(
+                "Selecciona un segmento para ver sus bodegas:",
+                cluster_options,
+                index=int(target_cluster)
+            )
+            selected_cluster_id = int(selected_cluster_name.split()[-1]) - 1
+
+            # Filtrar bodegas del cluster seleccionado (con prob >= 30%)
+            prob_col = f'prob_cluster_{selected_cluster_id}'
+            if prob_col in df_all_wineries.columns:
+                cluster_wineries = df_all_wineries[
+                    (df_all_wineries['cluster'] == selected_cluster_id) |
+                    (df_all_wineries[prob_col] >= 0.3)
+                ].copy()
+            else:
+                cluster_wineries = df_all_wineries[df_all_wineries['cluster'] == selected_cluster_id].copy()
+
+            # Marcar la bodega focal
+            cluster_wineries['es_focal'] = cluster_wineries['winery'] == target_winery
+
+            # Ordenar por probabilidad de pertenencia
+            if prob_col in cluster_wineries.columns:
+                cluster_wineries = cluster_wineries.sort_values(prob_col, ascending=False)
+
+            st.subheader(f"Bodegas en {selected_cluster_name} ({len(cluster_wineries)} bodegas)")
+
+            # Mostrar si es el cluster de la bodega focal
+            if selected_cluster_id == target_cluster:
+                st.success(f"Este es el segmento de mercado de **{target_winery}** (bodega focal)")
+
+            # Preparar columnas para mostrar
+            display_cols = ['winery', 'avg_points', 'avg_price', 'n_wines', 'main_province', 'main_variety']
+            if prob_col in cluster_wineries.columns:
+                display_cols.append(prob_col)
+
+            cluster_display = cluster_wineries[display_cols].copy()
+
+            # Renombrar columnas
+            col_names = {
+                'winery': 'Bodega',
+                'avg_points': 'Puntuación',
+                'avg_price': 'Precio ($)',
+                'n_wines': 'Nº Vinos',
+                'main_province': 'Provincia',
+                'main_variety': 'Variedad'
+            }
+            if prob_col in display_cols:
+                col_names[prob_col] = 'Prob. Cluster'
+
+            cluster_display = cluster_display.rename(columns=col_names)
+
+            # Resaltar bodega focal
+            st.dataframe(
+                cluster_display.round(3).reset_index(drop=True),
+                width='stretch',
+                hide_index=True
+            )
+
+            # Estadísticas del cluster
+            st.subheader("Estadísticas del Segmento")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Precio Medio", f"${cluster_wineries['avg_price'].mean():.2f}")
+            col2.metric("Puntuación Media", f"{cluster_wineries['avg_points'].mean():.1f}")
+            col3.metric("Vinos Totales", f"{int(cluster_wineries['n_wines'].sum())}")
+            col4.metric("Variedades Únicas", f"{cluster_wineries['main_variety'].nunique()}")
+
+        else:
+            st.warning("No hay datos disponibles de todos los clusters.")
+
+    # ==========================================================================
+    # TAB: ANÁLISIS DE NÚMERO ÓPTIMO DE CLUSTERS (condicional)
     # ==========================================================================
     if show_optimal_analysis:
-        with tab_clusters:
+        with tab_clusters_opt:
             st.header("Análisis del Número Óptimo de Clusters")
 
             # Mostrar gráfico con los 4 métodos
